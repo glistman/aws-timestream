@@ -13,46 +13,66 @@ use aws_signing_request::request::{
 use aws_signing_request::request::{AWS_JSON_CONTENT_TYPE, X_AWZ_TARGET};
 use chrono::Utc;
 use reqwest::Response;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[derive(Serialize, Deserialize)]
-pub struct WriteRequest {
-    #[serde(rename = "DatabaseName")]
-    pub database_name: String,
-    #[serde(rename = "TableName")]
-    pub table_name: String,
-    #[serde(rename = "Records")]
-    pub records: Vec<Record>,
+#[derive(Serialize)]
+pub enum MeasureValueType {
+    DOUBLE,
+    BIGINT,
+    VARCHAR,
+    BOOLEAN,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Record {
+#[derive(Serialize)]
+pub enum DimensionValueType {
+    VARCHAR,
+}
+
+#[derive(Serialize)]
+pub enum TimeUnit {
+    MILLISECONDS,
+    SECONDS,
+    MICROSECONDS,
+    NANOSECONDS,
+}
+#[derive(Serialize)]
+pub struct WriteRequest<'a> {
+    #[serde(rename = "DatabaseName")]
+    pub database_name: &'a str,
+    #[serde(rename = "TableName")]
+    pub table_name: &'a str,
+    #[serde(rename = "Records")]
+    pub records: Vec<Record<'a>>,
+}
+
+#[derive(Serialize)]
+pub struct Record<'a> {
     #[serde(rename = "Dimensions")]
-    pub dimensions: Vec<Dimension>,
+    pub dimensions: &'a Vec<&'a Dimension<'a>>,
     #[serde(rename = "MeasureName")]
-    pub measure_name: String,
+    pub measure_name: &'a str,
     #[serde(rename = "MeasureValue")]
     pub measure_value: String,
     #[serde(rename = "MeasureValueType")]
-    pub measure_value_type: String,
+    pub measure_value_type: MeasureValueType,
     #[serde(rename = "Time")]
-    pub time: String,
+    pub time: &'a str,
     #[serde(rename = "TimeUnit")]
-    pub time_unit: String,
+    pub time_unit: TimeUnit,
     #[serde(rename = "Version")]
     pub version: u32,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Dimension {
+#[derive(Serialize)]
+pub struct Dimension<'a> {
     #[serde(rename = "DimensionValueType")]
-    pub dimension_value_type: String,
+    pub dimension_value_type: DimensionValueType,
     #[serde(rename = "Name")]
-    pub name: String,
+    pub name: &'a str,
     #[serde(rename = "Value")]
-    pub value: String,
+    pub value: &'a str,
 }
 
 #[derive(Debug)]
@@ -110,7 +130,10 @@ impl Timestream {
         self.discovery.get_next_enpoint()
     }
 
-    pub async fn write(&self, write_request: WriteRequest) -> Result<Response, TimestreamError> {
+    pub async fn write<'a>(
+        &self,
+        write_request: WriteRequest<'a>,
+    ) -> Result<Response, TimestreamError> {
         let client = reqwest::Client::new();
         let enpoint = self.get_enpoint().await?;
         let url = format!("https://{}", enpoint);
