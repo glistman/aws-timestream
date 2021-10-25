@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::atomic::AtomicUsize;
 
 use aws_signing_request::request::{
     CanonicalRequestBuilder, AUTHORIZATION, AWS_JSON_CONTENT_TYPE, X_AMZ_CONTENT_SHA256,
@@ -35,7 +35,7 @@ pub struct TimestreamEnpointResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TimestreamEnpoint {
     #[serde(alias = "Address")]
-    pub address: Arc<String>,
+    pub address: String,
     #[serde(alias = "CachePeriodInMinutes")]
     pub cache_period_in_minutes: u64,
 }
@@ -137,7 +137,7 @@ impl TimestreamDiscovery {
             .map(|response| response.endponts)
     }
 
-    pub fn get_next_enpoint(&self) -> Result<Arc<String>, TimestreamError> {
+    pub fn get_next_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
         let max_enpoint_index = self.enpoints.len() - 1;
 
         let index = if let Ok(_) = self.enpoint_index.compare_exchange(
@@ -152,7 +152,7 @@ impl TimestreamDiscovery {
         };
 
         match self.enpoints.get(index) {
-            Some(enpoint) => Ok(enpoint.address.clone()),
+            Some(enpoint) => Ok(&enpoint.address),
             None => Err(TimestreamError::new(EmptyEnpoint)),
         }
     }

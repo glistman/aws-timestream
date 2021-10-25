@@ -126,7 +126,7 @@ impl Timestream {
         }
     }
 
-    pub async fn get_enpoint(&self) -> Result<Arc<String>, TimestreamError> {
+    pub async fn get_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
         self.discovery.get_next_enpoint()
     }
 
