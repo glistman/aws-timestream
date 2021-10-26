@@ -34,13 +34,7 @@ async fn main() {
     let refresh_timestream = timestream.clone();
 
     tokio::spawn(async move {
-        loop {
-            let timestream = refresh_timestream.read().await;
-            timestream.await_to_reload().await;
-            drop(timestream);
-            let mut timestream = refresh_timestream.write().await;
-            timestream.reload_enpoints().await;
-        }
+        Timestream::execute_refresh_endpoint_procedure(refresh_timestream).await;
     });
     
     let dimensions = vec![

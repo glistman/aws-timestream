@@ -15,7 +15,7 @@ use chrono::Utc;
 use reqwest::Response;
 use serde::Serialize;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::{sync::RwLock, time::sleep};
 
 #[derive(Serialize)]
 pub enum MeasureValueType {
@@ -180,5 +180,15 @@ impl Timestream {
                     response: error.to_string(),
                 })
             })
+    }
+
+    pub async fn execute_refresh_endpoint_procedure(refresh_timestream: Arc<RwLock<Timestream>>) {
+        loop {
+            let timestream = refresh_timestream.read().await;
+            timestream.await_to_reload().await;
+            drop(timestream);
+            let mut timestream = refresh_timestream.write().await;
+            timestream.reload_enpoints().await;
+        }
     }
 }
