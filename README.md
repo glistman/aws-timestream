@@ -37,6 +37,7 @@ async fn main() {
         loop {
             let timestream = refresh_timestream.read().await;
             timestream.await_to_reload().await;
+            drop(timestream);
             let mut timestream = refresh_timestream.write().await;
             timestream.reload_enpoints().await;
         }
