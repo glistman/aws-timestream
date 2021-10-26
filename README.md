@@ -19,13 +19,15 @@ use tokio::time::sleep;
 async fn main() {
     let aws_access_key_id = env!("AWS_ACCESS_KEY_ID");
     let aws_secret_access_key = env!("AWS_SECRET_ACCESS_KEY");
+    let aws_session_token = option_env!("AWS_SESSION_TOKEN");
 
     let timestream = Arc::new(RwLock::new(
         Timestream::new(
-            "ingest".to_string(),
-            "us-east-1".to_string(),
-            aws_access_key_id.to_string(),
-            aws_secret_access_key.to_string(),
+            "ingest",
+            "us-east-1",
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_session_token,
         )
         .await
         .unwrap(),

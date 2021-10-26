@@ -76,26 +76,29 @@ pub struct Dimension<'a> {
 }
 
 #[derive(Debug)]
-pub struct Timestream {
-    discovery: TimestreamDiscovery,
+pub struct Timestream<'a> {
+    discovery: TimestreamDiscovery<'a>,
     reload_error: bool,
-    aws_access_key_id: String,
-    aws_secret_access_key: String,
-    region: String,
+    aws_access_key_id: &'a str,
+    aws_secret_access_key: &'a str,
+    aws_session_token: Option<&'a str>,
+    region: &'a str,
 }
 
-impl Timestream {
+impl<'a> Timestream<'a> {
     pub async fn new(
-        action: String,
-        region: String,
-        aws_access_key_id: String,
-        aws_secret_access_key: String,
-    ) -> Result<Timestream, TimestreamError> {
+        action: &'a str,
+        region: &'a str,
+        aws_access_key_id: &'a str,
+        aws_secret_access_key: &'a str,
+        aws_session_token: Option<&'a str>,
+    ) -> Result<Timestream<'a>, TimestreamError> {
         let mut discovery = TimestreamDiscovery::new(
             action,
-            region.clone(),
-            aws_access_key_id.clone(),
-            aws_secret_access_key.clone(),
+            region,
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_session_token,
         );
         discovery.reload_enpoints().await?;
 
@@ -104,6 +107,7 @@ impl Timestream {
             reload_error: false,
             aws_access_key_id,
             aws_secret_access_key,
+            aws_session_token,
             region,
         })
     }
@@ -126,12 +130,12 @@ impl Timestream {
         }
     }
 
-    pub async fn get_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
+    pub async fn get_enpoint(&'a self) -> Result<&'a str, TimestreamError> {
         self.discovery.get_next_enpoint()
     }
 
-    pub async fn write<'a>(
-        &self,
+    pub async fn write(
+        &'a self,
         write_request: WriteRequest<'a>,
     ) -> Result<Response, TimestreamError> {
         let client = reqwest::Client::new();
@@ -156,7 +160,7 @@ impl Timestream {
             .body(&body)
             .build(Utc::now());
 
-        client
+        let request = client
             .post(url)
             .header(X_AMZ_DATE, &canonical_request.date.iso_8601)
             .header("Content-Type", AWS_JSON_CONTENT_TYPE)
@@ -168,21 +172,28 @@ impl Timestream {
                     .calculate_authorization()
                     .expect("Authorization creation failed"),
             )
-            .body(body)
-            .send()
-            .await
-            .map_err(|error| {
-                TimestreamError::new(HttpError {
-                    code: error
-                        .status()
-                        .map(|status| status.to_string())
-                        .unwrap_or("unknown".to_string()),
-                    response: error.to_string(),
-                })
+            .body(body);
+
+        let request = if let Some(token) = self.aws_session_token {
+            request.header("X-Amz-Security-Token", token)
+        } else {
+            request
+        };
+
+        request.send().await.map_err(|error| {
+            TimestreamError::new(HttpError {
+                code: error
+                    .status()
+                    .map(|status| status.to_string())
+                    .unwrap_or("unknown".to_string()),
+                response: error.to_string(),
             })
+        })
     }
 
-    pub async fn execute_refresh_endpoint_procedure(refresh_timestream: Arc<RwLock<Timestream>>) {
+    pub async fn execute_refresh_endpoint_procedure(
+        refresh_timestream: Arc<RwLock<Timestream<'a>>>,
+    ) {
         loop {
             let timestream = refresh_timestream.read().await;
             timestream.await_to_reload().await;

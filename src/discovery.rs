@@ -15,12 +15,13 @@ use crate::error::{
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
-pub struct TimestreamDiscovery {
+pub struct TimestreamDiscovery<'a> {
     pub host: String,
     pub url: String,
-    pub region: String,
-    pub aws_access_key_id: String,
-    pub aws_secret_access_key: String,
+    pub region: &'a str,
+    pub aws_access_key_id: &'a str,
+    pub aws_secret_access_key: &'a str,
+    pub aws_session_token: Option<&'a str>,
     pub enpoints: Vec<TimestreamEnpoint>,
     pub enpoint_index: AtomicUsize,
     pub min_cache_period_in_minutes: u64,
@@ -40,13 +41,14 @@ pub struct TimestreamEnpoint {
     pub cache_period_in_minutes: u64,
 }
 
-impl TimestreamDiscovery {
+impl<'a> TimestreamDiscovery<'a> {
     pub fn new(
-        action: String,
-        region: String,
-        aws_access_key_id: String,
-        aws_secret_access_key: String,
-    ) -> TimestreamDiscovery {
+        action: &'a str,
+        region: &'a str,
+        aws_access_key_id: &'a str,
+        aws_secret_access_key: &'a str,
+        aws_session_token: Option<&'a str>,
+    ) -> TimestreamDiscovery<'a> {
         let host = format!("{}.timestream.{}.amazonaws.com", action, region);
         let url = format!("https://{}", host);
 
@@ -56,6 +58,7 @@ impl TimestreamDiscovery {
             region,
             aws_access_key_id,
             aws_secret_access_key,
+            aws_session_token,
             enpoints: Vec::new(),
             enpoint_index: AtomicUsize::new(0),
             min_cache_period_in_minutes: 60,
@@ -95,6 +98,7 @@ impl TimestreamDiscovery {
 
         let canonical_request = canonical_request_builder
             .header(X_AWZ_TARGET, "Timestream_20181101.DescribeEndpoints")
+            .header_opt("X-Amz-Security-Token", self.aws_session_token)
             .body(body)
             .build(Utc::now());
 
@@ -104,14 +108,22 @@ impl TimestreamDiscovery {
 
         let client = reqwest::Client::new();
 
-        client
+        let request = client
             .post(&self.url)
             .header(X_AMZ_DATE, &canonical_request.date.iso_8601)
             .header("Content-Type", AWS_JSON_CONTENT_TYPE)
             .header(X_AWZ_TARGET, "Timestream_20181101.DescribeEndpoints")
             .header(X_AMZ_CONTENT_SHA256, &canonical_request.content_sha_256)
             .header(AUTHORIZATION, &authorization)
-            .body(body)
+            .body(body);
+
+        let request = if let Some(token) = self.aws_session_token {
+            request.header("X-Amz-Security-Token", token)
+        } else {
+            request
+        };
+
+        request
             .send()
             .await
             .map_err(|error| {
@@ -137,7 +149,7 @@ impl TimestreamDiscovery {
             .map(|response| response.endponts)
     }
 
-    pub fn get_next_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
+    pub fn get_next_enpoint(&'a self) -> Result<&'a str, TimestreamError> {
         let max_enpoint_index = self.enpoints.len() - 1;
 
         let index = if let Ok(_) = self.enpoint_index.compare_exchange(
