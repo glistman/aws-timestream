@@ -7,10 +7,11 @@ use crate::{
         TimestreamErrorCause::{HttpError, JsonError},
     },
 };
+use aws_credentials::credential_provider::AwsCredentialProvider;
 use aws_signing_request::request::{
     CanonicalRequestBuilder, AUTHORIZATION, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };
-use aws_signing_request::request::{AWS_JSON_CONTENT_TYPE, X_AWZ_TARGET};
+use aws_signing_request::request::{AWS_JSON_CONTENT_TYPE, X_AMZ_SECURITY_TOKEN, X_AWZ_TARGET};
 use chrono::Utc;
 use reqwest::Response;
 use serde::Serialize;
@@ -75,42 +76,42 @@ pub struct Dimension<'a> {
     pub value: &'a str,
 }
 
-#[derive(Debug)]
-pub struct Timestream<'a> {
-    discovery: TimestreamDiscovery<'a>,
+pub struct Timestream {
+    discovery: TimestreamDiscovery,
     reload_error: bool,
-    aws_access_key_id: &'a str,
-    aws_secret_access_key: &'a str,
-    aws_session_token: Option<&'a str>,
-    region: &'a str,
+    credential_provider: Arc<RwLock<dyn AwsCredentialProvider + Sync + Send>>,
+    region: String,
 }
 
-impl<'a> Timestream<'a> {
+impl Timestream {
     pub async fn new(
-        action: &'a str,
-        region: &'a str,
-        aws_access_key_id: &'a str,
-        aws_secret_access_key: &'a str,
-        aws_session_token: Option<&'a str>,
-    ) -> Result<Timestream<'a>, TimestreamError> {
+        action: &str,
+        region: &str,
+        credential_provider: Arc<RwLock<dyn AwsCredentialProvider + Sync + Send>>,
+    ) -> Arc<RwLock<Timestream>> {
         let mut discovery = TimestreamDiscovery::new(
-            action,
-            region,
-            aws_access_key_id,
-            aws_secret_access_key,
-            aws_session_token,
+            action.to_string(),
+            region.to_string(),
+            credential_provider.clone(),
         );
-        discovery.reload_enpoints().await?;
+        discovery.reload_enpoints().await;
 
-        Ok(Timestream {
+        let timestream = Arc::new(RwLock::new(Timestream {
             discovery,
             reload_error: false,
-            aws_access_key_id,
-            aws_secret_access_key,
-            aws_session_token,
-            region,
-        })
+            credential_provider,
+            region: region.to_string(),
+        }));
+
+        let refresh_timestream = timestream.clone();
+        tokio::spawn(async move {
+            Timestream::execute_refresh_endpoint_procedure(refresh_timestream).await;
+        });
+
+        timestream
     }
+
+    pub async fn new_with_container_credential_provider() {}
 
     pub async fn await_to_reload(&self) {
         if self.reload_error {
@@ -130,11 +131,11 @@ impl<'a> Timestream<'a> {
         }
     }
 
-    pub async fn get_enpoint(&'a self) -> Result<&'a str, TimestreamError> {
+    pub async fn get_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
         self.discovery.get_next_enpoint()
     }
 
-    pub async fn write(
+    pub async fn write<'a>(
         &'a self,
         write_request: WriteRequest<'a>,
     ) -> Result<Response, TimestreamError> {
@@ -144,12 +145,18 @@ impl<'a> Timestream<'a> {
         let body =
             serde_json::to_string(&write_request).map_err(|_| TimestreamError::new(JsonError))?;
 
+        let credentials_provider = self.credential_provider.read().await;
+        let credentials = credentials_provider
+            .get_credentials()
+            .await
+            .map_err(TimestreamError::from_credential_error)?;
+
         let mut canonical_request_builder = CanonicalRequestBuilder::new(
             &enpoint,
             "POST",
             "/",
-            &self.aws_access_key_id,
-            &self.aws_secret_access_key,
+            &credentials.aws_access_key_id,
+            &credentials.aws_secret_access_key,
             &self.region,
             "timestream",
         );
@@ -157,6 +164,7 @@ impl<'a> Timestream<'a> {
         let canonical_request = canonical_request_builder
             .header("Content-Type", AWS_JSON_CONTENT_TYPE)
             .header(X_AWZ_TARGET, "Timestream_20181101.WriteRecords")
+            .header_opt_ref(X_AMZ_SECURITY_TOKEN, &credentials.aws_session_token)
             .body(&body)
             .build(Utc::now());
 
@@ -174,8 +182,8 @@ impl<'a> Timestream<'a> {
             )
             .body(body);
 
-        let request = if let Some(token) = self.aws_session_token {
-            request.header("X-Amz-Security-Token", token)
+        let request = if let Some(token) = &credentials.aws_session_token {
+            request.header(X_AMZ_SECURITY_TOKEN, token)
         } else {
             request
         };
@@ -191,9 +199,7 @@ impl<'a> Timestream<'a> {
         })
     }
 
-    pub async fn execute_refresh_endpoint_procedure(
-        refresh_timestream: Arc<RwLock<Timestream<'a>>>,
-    ) {
+    pub async fn execute_refresh_endpoint_procedure(refresh_timestream: Arc<RwLock<Timestream>>) {
         loop {
             let timestream = refresh_timestream.read().await;
             timestream.await_to_reload().await;

@@ -1,11 +1,13 @@
-use std::sync::atomic::AtomicUsize;
+use std::sync::{atomic::AtomicUsize, Arc};
 
+use aws_credentials::credential_provider::AwsCredentialProvider;
 use aws_signing_request::request::{
     CanonicalRequestBuilder, AUTHORIZATION, AWS_JSON_CONTENT_TYPE, X_AMZ_CONTENT_SHA256,
-    X_AMZ_DATE, X_AWZ_TARGET,
+    X_AMZ_DATE, X_AMZ_SECURITY_TOKEN, X_AWZ_TARGET,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::error::{
     TimestreamError,
@@ -14,16 +16,13 @@ use crate::error::{
 
 use std::sync::atomic::Ordering;
 
-#[derive(Debug)]
-pub struct TimestreamDiscovery<'a> {
-    pub host: String,
-    pub url: String,
-    pub region: &'a str,
-    pub aws_access_key_id: &'a str,
-    pub aws_secret_access_key: &'a str,
-    pub aws_session_token: Option<&'a str>,
-    pub enpoints: Vec<TimestreamEnpoint>,
-    pub enpoint_index: AtomicUsize,
+pub struct TimestreamDiscovery {
+    host: String,
+    url: String,
+    region: String,
+    credential_provider: Arc<RwLock<dyn AwsCredentialProvider + Sync + Send>>,
+    enpoints: Vec<TimestreamEnpoint>,
+    enpoint_index: AtomicUsize,
     pub min_cache_period_in_minutes: u64,
 }
 
@@ -41,24 +40,20 @@ pub struct TimestreamEnpoint {
     pub cache_period_in_minutes: u64,
 }
 
-impl<'a> TimestreamDiscovery<'a> {
+impl<'a> TimestreamDiscovery {
     pub fn new(
-        action: &'a str,
-        region: &'a str,
-        aws_access_key_id: &'a str,
-        aws_secret_access_key: &'a str,
-        aws_session_token: Option<&'a str>,
-    ) -> TimestreamDiscovery<'a> {
-        let host = format!("{}.timestream.{}.amazonaws.com", action, region);
+        action: String,
+        region: String,
+        credential_provider: Arc<RwLock<dyn AwsCredentialProvider + Sync + Send>>,
+    ) -> TimestreamDiscovery {
+        let host = format!("{}.timestream.{}.amazonaws.com", &action, &region);
         let url = format!("https://{}", host);
 
         TimestreamDiscovery {
             host,
             url,
             region,
-            aws_access_key_id,
-            aws_secret_access_key,
-            aws_session_token,
+            credential_provider,
             enpoints: Vec::new(),
             enpoint_index: AtomicUsize::new(0),
             min_cache_period_in_minutes: 60,
@@ -84,21 +79,27 @@ impl<'a> TimestreamDiscovery<'a> {
     }
 
     async fn query_enpoints(&mut self) -> Result<Vec<TimestreamEnpoint>, TimestreamError> {
+        let credentials_provider = self.credential_provider.read().await;
+        let credentials = credentials_provider
+            .get_credentials()
+            .await
+            .map_err(TimestreamError::from_credential_error)?;
+
         let body = "{}";
 
         let mut canonical_request_builder = CanonicalRequestBuilder::new(
             self.host.as_str(),
             "POST",
             "/",
-            &self.aws_access_key_id,
-            &self.aws_secret_access_key,
+            &credentials.aws_access_key_id,
+            &credentials.aws_secret_access_key,
             &self.region,
             "timestream",
         );
 
         let canonical_request = canonical_request_builder
             .header(X_AWZ_TARGET, "Timestream_20181101.DescribeEndpoints")
-            .header_opt("X-Amz-Security-Token", self.aws_session_token)
+            .header_opt_ref(X_AMZ_SECURITY_TOKEN, &credentials.aws_session_token)
             .body(body)
             .build(Utc::now());
 
@@ -117,8 +118,8 @@ impl<'a> TimestreamDiscovery<'a> {
             .header(AUTHORIZATION, &authorization)
             .body(body);
 
-        let request = if let Some(token) = self.aws_session_token {
-            request.header("X-Amz-Security-Token", token)
+        let request = if let Some(token) = &credentials.aws_session_token {
+            request.header(X_AMZ_SECURITY_TOKEN, token)
         } else {
             request
         };
