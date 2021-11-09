@@ -53,17 +53,39 @@ pub struct Record<'a> {
     #[serde(rename = "Dimensions")]
     pub dimensions: &'a Vec<&'a Dimension<'a>>,
     #[serde(rename = "MeasureName")]
-    pub measure_name: &'a str,
+    pub measure_name: String,
     #[serde(rename = "MeasureValue")]
     pub measure_value: String,
     #[serde(rename = "MeasureValueType")]
     pub measure_value_type: MeasureValueType,
     #[serde(rename = "Time")]
-    pub time: &'a str,
+    pub time: String,
     #[serde(rename = "TimeUnit")]
     pub time_unit: TimeUnit,
     #[serde(rename = "Version")]
     pub version: u32,
+}
+
+impl<'a> Record<'a> {
+    pub fn new(
+        dimensions: &'a Vec<&'a Dimension<'a>>,
+        measure_name: &str,
+        measure_value: String,
+        measure_value_type: MeasureValueType,
+        time: &str,
+        time_unit: TimeUnit,
+        version: u32,
+    ) -> Record<'a> {
+        Record {
+            dimensions,
+            measure_name: measure_name.to_string(),
+            measure_value,
+            measure_value_type,
+            time: time.to_string(),
+            time_unit,
+            version,
+        }
+    }
 }
 
 #[derive(Serialize)]
