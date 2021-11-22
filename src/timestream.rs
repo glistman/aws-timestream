@@ -133,8 +133,6 @@ impl Timestream {
         timestream
     }
 
-    pub async fn new_with_container_credential_provider() {}
-
     pub async fn await_to_reload(&self) {
         if self.reload_error {
             sleep(Duration::from_secs(1)).await;
