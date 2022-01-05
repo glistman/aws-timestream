@@ -1,22 +1,21 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::{
-    discovery::TimestreamDiscovery,
-    error::{
-        TimestreamError,
-        TimestreamErrorCause::{HttpError, JsonError},
-    },
-};
 use aws_credentials::credential_provider::AwsCredentialProvider;
 use aws_signing_request::request::{
     CanonicalRequestBuilder, AUTHORIZATION, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };
 use aws_signing_request::request::{AWS_JSON_CONTENT_TYPE, X_AMZ_SECURITY_TOKEN, X_AWZ_TARGET};
 use chrono::Utc;
-use reqwest::Response;
+use log::info;
+use reqwest::{Client, Response};
 use serde::Serialize;
-use std::time::Duration;
 use tokio::{sync::RwLock, time::sleep};
+
+use crate::{
+    discovery::TimestreamDiscovery,
+    error::{TimestreamError, TimestreamErrorCause::JsonError},
+};
 
 #[derive(Serialize)]
 pub enum MeasureValueType {
@@ -38,6 +37,7 @@ pub enum TimeUnit {
     MICROSECONDS,
     NANOSECONDS,
 }
+
 #[derive(Serialize)]
 pub struct WriteRequest<'a> {
     #[serde(rename = "DatabaseName")]
@@ -51,7 +51,7 @@ pub struct WriteRequest<'a> {
 #[derive(Serialize)]
 pub struct Record<'a> {
     #[serde(rename = "Dimensions")]
-    pub dimensions: &'a Vec<&'a Dimension<'a>>,
+    pub dimensions: &'a [Dimension],
     #[serde(rename = "MeasureName")]
     pub measure_name: String,
     #[serde(rename = "MeasureValue")]
@@ -68,7 +68,7 @@ pub struct Record<'a> {
 
 impl<'a> Record<'a> {
     pub fn new(
-        dimensions: &'a Vec<&'a Dimension<'a>>,
+        dimensions: &'a [Dimension],
         measure_name: &str,
         measure_value: String,
         measure_value_type: MeasureValueType,
@@ -89,16 +89,17 @@ impl<'a> Record<'a> {
 }
 
 #[derive(Serialize)]
-pub struct Dimension<'a> {
+pub struct Dimension {
     #[serde(rename = "DimensionValueType")]
     pub dimension_value_type: DimensionValueType,
     #[serde(rename = "Name")]
-    pub name: &'a str,
+    pub name: String,
     #[serde(rename = "Value")]
-    pub value: &'a str,
+    pub value: String,
 }
 
 pub struct Timestream {
+    client: Client,
     discovery: TimestreamDiscovery,
     reload_error: bool,
     credential_provider: Arc<RwLock<dyn AwsCredentialProvider + Sync + Send>>,
@@ -116,9 +117,11 @@ impl Timestream {
             region.to_string(),
             credential_provider.clone(),
         );
-        discovery.reload_enpoints().await;
+        let initial_endpoint = discovery.reload_endpoints().await;
+        info!("initial endpoint discovery result:{:?}", initial_endpoint);
 
         let timestream = Arc::new(RwLock::new(Timestream {
+            client: Client::new(),
             discovery,
             reload_error: false,
             credential_provider,
@@ -133,35 +136,31 @@ impl Timestream {
         timestream
     }
 
-    pub async fn await_to_reload(&self) {
+    pub fn time_to_await(&self) -> Duration {
         if self.reload_error {
-            sleep(Duration::from_secs(1)).await;
+            Duration::from_secs(1)
         } else {
-            sleep(Duration::from_secs(
-                self.discovery.min_cache_period_in_minutes * 60,
-            ))
-            .await;
+            Duration::from_secs(self.discovery.min_cache_period_in_minutes * 60)
         }
     }
 
-    pub async fn reload_enpoints(&mut self) {
-        match self.discovery.reload_enpoints().await {
+    pub async fn reload_endpoints(&mut self) {
+        match self.discovery.reload_endpoints().await {
             Ok(_) => self.reload_error = false,
             Err(_) => self.reload_error = true,
         }
     }
 
-    pub async fn get_enpoint<'a>(&'a self) -> Result<&'a str, TimestreamError> {
-        self.discovery.get_next_enpoint()
+    pub async fn get_endpoint(&self) -> Result<&str, TimestreamError> {
+        self.discovery.get_next_endpoint()
     }
 
     pub async fn write<'a>(
         &'a self,
         write_request: WriteRequest<'a>,
     ) -> Result<Response, TimestreamError> {
-        let client = reqwest::Client::new();
-        let enpoint = self.get_enpoint().await?;
-        let url = format!("https://{}", enpoint);
+        let endpoint = self.get_endpoint().await?;
+        let url = format!("https://{}", endpoint);
         let body =
             serde_json::to_string(&write_request).map_err(|_| TimestreamError::new(JsonError))?;
 
@@ -171,24 +170,23 @@ impl Timestream {
             .await
             .map_err(TimestreamError::from_credential_error)?;
 
-        let mut canonical_request_builder = CanonicalRequestBuilder::new(
-            &enpoint,
+        let canonical_request = CanonicalRequestBuilder::new(
+            endpoint,
             "POST",
             "/",
             &credentials.aws_access_key_id,
             &credentials.aws_secret_access_key,
             &self.region,
             "timestream",
-        );
+        )
+        .header("Content-Type", AWS_JSON_CONTENT_TYPE)
+        .header(X_AWZ_TARGET, "Timestream_20181101.WriteRecords")
+        .header_opt_ref(X_AMZ_SECURITY_TOKEN, &credentials.aws_session_token)
+        .body(&body)
+        .build(Utc::now());
 
-        let canonical_request = canonical_request_builder
-            .header("Content-Type", AWS_JSON_CONTENT_TYPE)
-            .header(X_AWZ_TARGET, "Timestream_20181101.WriteRecords")
-            .header_opt_ref(X_AMZ_SECURITY_TOKEN, &credentials.aws_session_token)
-            .body(&body)
-            .build(Utc::now());
-
-        let request = client
+        let request = self
+            .client
             .post(url)
             .header(X_AMZ_DATE, &canonical_request.date.iso_8601)
             .header("Content-Type", AWS_JSON_CONTENT_TYPE)
@@ -208,24 +206,21 @@ impl Timestream {
             request
         };
 
-        request.send().await.map_err(|error| {
-            TimestreamError::new(HttpError {
-                code: error
-                    .status()
-                    .map(|status| status.to_string())
-                    .unwrap_or("unknown".to_string()),
-                response: error.to_string(),
-            })
-        })
+        request
+            .send()
+            .await
+            .map_err(TimestreamError::from_request_error)
     }
 
     pub async fn execute_refresh_endpoint_procedure(refresh_timestream: Arc<RwLock<Timestream>>) {
         loop {
+            info!("timestream:reload");
             let timestream = refresh_timestream.read().await;
-            timestream.await_to_reload().await;
+            let time_to_await = timestream.time_to_await();
             drop(timestream);
+            sleep(time_to_await).await;
             let mut timestream = refresh_timestream.write().await;
-            timestream.reload_enpoints().await;
+            timestream.reload_endpoints().await;
         }
     }
 }

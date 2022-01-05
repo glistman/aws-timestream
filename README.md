@@ -9,7 +9,7 @@ Features:
 ```bash
 use std::time::Duration;
 
-use aws_credentials::basic_credentials::AwsBasicCretendtialsProvider;
+use aws_credentials::basic_credentials::AwsBasicCredentialsProvider;
 use aws_timestream::timestream::DimensionValueType::VARCHAR;
 use aws_timestream::timestream::MeasureValueType::{BIGINT, DOUBLE};
 use aws_timestream::timestream::TimeUnit::NANOSECONDS;
@@ -20,30 +20,30 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
     let aws_access_key_id = env!("AWS_ACCESS_KEY_ID");
     let aws_secret_access_key = env!("AWS_SECRET_ACCESS_KEY");
 
     let aws_credentials_provider =
-        AwsBasicCretendtialsProvider::new(aws_access_key_id, aws_secret_access_key);
+        AwsBasicCredentialsProvider::new(aws_access_key_id, aws_secret_access_key);
 
     let timestream = Timestream::new("ingest", "us-east-1", aws_credentials_provider.clone()).await;
 
     let dimensions = vec![
-        &Dimension {
+        Dimension {
             dimension_value_type: VARCHAR,
-            name: "microservice",
-            value: "test-ms",
+            name: "microservice".to_owned(),
+            value: "test-ms".to_owned(),
         },
-        &Dimension {
+        Dimension {
             dimension_value_type: VARCHAR,
-            name: "host",
-            value: "192.168.10.10",
+            name: "host".to_owned(),
+            value: "192.168.10.10".to_owned(),
         },
     ];
 
     loop {
         let mut rng = rand::thread_rng();
-        let timestream = timestream.clone();
         let timestream = timestream.read().await;
 
         sleep(Duration::from_secs(1)).await;
@@ -77,7 +77,7 @@ async fn main() {
         };
 
         let response = timestream.write(write_request).await;
-        println!("{:?}", response);
+        println!("write:{:?}", response);
     }
 }
 ```
@@ -91,7 +91,7 @@ async fn main() {
 ```bash
 use std::time::Duration;
 
-use aws_credentials::container_credentials::AwsContrainerCretendtialsProvider;
+use aws_credentials::container_credentials::AwsContainerCredentialsProvider;
 use aws_timestream::timestream::DimensionValueType::VARCHAR;
 use aws_timestream::timestream::MeasureValueType::{BIGINT, DOUBLE};
 use aws_timestream::timestream::TimeUnit::NANOSECONDS;
@@ -102,25 +102,25 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    let aws_credentials_provider = AwsContrainerCretendtialsProvider::new().await;
+    env_logger::init();
+    let aws_credentials_provider = AwsContainerCredentialsProvider::new().await;
     let timestream = Timestream::new("ingest", "us-east-1", aws_credentials_provider.clone()).await;
 
     let dimensions = vec![
-        &Dimension {
+        Dimension {
             dimension_value_type: VARCHAR,
-            name: "microservice",
-            value: "test-ms",
+            name: "microservice".to_owned(),
+            value: "test-ms".to_owned(),
         },
-        &Dimension {
+        Dimension {
             dimension_value_type: VARCHAR,
-            name: "host",
-            value: "192.168.10.10",
+            name: "host".to_owned(),
+            value: "192.168.10.10".to_owned(),
         },
     ];
 
     loop {
         let mut rng = rand::thread_rng();
-        let timestream = timestream.clone();
         let timestream = timestream.read().await;
 
         sleep(Duration::from_secs(1)).await;
@@ -154,7 +154,7 @@ async fn main() {
         };
 
         let response = timestream.write(write_request).await;
-        println!("{:?}", response);
+        println!("write:{:?}", response);
     }
 }
 ```
