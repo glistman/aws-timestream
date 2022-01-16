@@ -157,7 +157,7 @@ impl Timestream {
 
     pub async fn write<'a>(
         &'a self,
-        write_request: WriteRequest<'a>,
+        write_request: &WriteRequest<'a>,
     ) -> Result<Response, TimestreamError> {
         let endpoint = self.get_endpoint().await?;
         let url = format!("https://{}", endpoint);
@@ -214,9 +214,9 @@ impl Timestream {
 
     pub async fn execute_refresh_endpoint_procedure(refresh_timestream: Arc<RwLock<Timestream>>) {
         loop {
-            info!("timestream:reload");
             let timestream = refresh_timestream.read().await;
             let time_to_await = timestream.time_to_await();
+            info!("time_to_await:{:?}", &time_to_await);
             drop(timestream);
             sleep(time_to_await).await;
             let mut timestream = refresh_timestream.write().await;
