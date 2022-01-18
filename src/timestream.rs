@@ -123,7 +123,7 @@ impl Timestream {
         let timestream = Arc::new(RwLock::new(Timestream {
             client: Client::new(),
             discovery,
-            reload_error: false,
+            reload_error: initial_endpoint.is_err(),
             credential_provider,
             region: region.to_string(),
         }));
@@ -222,5 +222,10 @@ impl Timestream {
             let mut timestream = refresh_timestream.write().await;
             timestream.reload_endpoints().await;
         }
+    }
+
+    pub async fn reload_credentials(&mut self) {
+        let mut credentials = self.credential_provider.write().await;
+        credentials.reload().await;
     }
 }
